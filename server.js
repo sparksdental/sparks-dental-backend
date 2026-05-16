@@ -14,17 +14,27 @@ const pool = new Pool({
 
 // ─── CREATE SYNC TABLE ON STARTUP ────────────────────
 async function initDB() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS clinic_state (
-      id INTEGER PRIMARY KEY DEFAULT 1,
-      state JSONB NOT NULL,
-      updated_at TIMESTAMPTZ DEFAULT NOW(),
-      CHECK (id = 1)
-    )
-  `);
-  console.log('Database ready');
+  let retries = 5;
+  while (retries > 0) {
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS clinic_state (
+          id INTEGER PRIMARY KEY DEFAULT 1,
+          state JSONB NOT NULL,
+          updated_at TIMESTAMPTZ DEFAULT NOW(),
+          CHECK (id = 1)
+        )
+      `);
+      console.log('Database ready');
+      return;
+    } catch (e) {
+      retries--;
+      console.log(`DB not ready, retrying... (${retries} left)`);
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+  console.error('Could not connect to DB after retries');
 }
-initDB().catch(console.error);
 
 // ─── SYNC: SAVE FULL APP STATE ────────────────────────
 // Called automatically on every save from the HTML app
