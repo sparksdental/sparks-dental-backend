@@ -1,11 +1,57 @@
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
+const { WebSocketServer } = require('ws');
+const http = require('http');
 
 const app = express();
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
+
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
-app.use(express.static('public')); // ← serves clinic HTML from Railway
+app.use(express.static('public'));
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
+
+// ─── WEBSOCKET SYNC ───────────────────────────────────
+// When one device saves, broadcast to all other open devices
+wss.on('connection', (ws) => {
+  console.log('Device connected');
+
+  // Send latest state to newly connected device
+  pool.query('SELECT state FROM clinic_state WHERE id = 1')
+    .then(result => {
+      if (result.rows.length > 0) {
+        ws.send(JSON.stringify({ type: 'state', data: result.rows[0].state }));
+      }
+    }).catch(() => {});
+
+  ws.on('message', async (msg) => {
+    try {
+      const { type, data } = JSON.parse(msg);
+      if (type === 'push') {
+        // Save to DB
+        await pool.query(`
+          INSERT INTO clinic_state (id, state, updated_at)
+          VALUES (1, $1, NOW())
+          ON CONFLICT (id) DO UPDATE SET state = $1, updated_at = NOW()
+        `, [JSON.stringify(data)]);
+        // Broadcast to all other connected devices
+        wss.clients.forEach(client => {
+          if (client !== ws && client.readyState === 1) {
+            client.send(JSON.stringify({ type: 'state', data }));
+          }
+        });
+      }
+    } catch (e) { console.error('WS message error:', e.message); }
+  });
+
+  ws.on('close', () => console.log('Device disconnected'));
+}); // ← serves clinic HTML from Railway
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -14,27 +60,17 @@ const pool = new Pool({
 
 // ─── CREATE SYNC TABLE ON STARTUP ────────────────────
 async function initDB() {
-  let retries = 5;
-  while (retries > 0) {
-    try {
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS clinic_state (
-          id INTEGER PRIMARY KEY DEFAULT 1,
-          state JSONB NOT NULL,
-          updated_at TIMESTAMPTZ DEFAULT NOW(),
-          CHECK (id = 1)
-        )
-      `);
-      console.log('Database ready');
-      return;
-    } catch (e) {
-      retries--;
-      console.log(`DB not ready, retrying... (${retries} left)`);
-      await new Promise(r => setTimeout(r, 3000));
-    }
-  }
-  console.error('Could not connect to DB after retries');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS clinic_state (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      state JSONB NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      CHECK (id = 1)
+    )
+  `);
+  console.log('Database ready');
 }
+initDB().catch(console.error);
 
 // ─── SYNC: SAVE FULL APP STATE ────────────────────────
 // Called automatically on every save from the HTML app
@@ -240,5 +276,5 @@ app.delete('/api/doctors/:id', async (req, res) => {
 });
 
 // ─── START SERVER ─────────────────────────────────────
-const PORT = process.env.PORT || 9898;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
