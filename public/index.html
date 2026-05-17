@@ -3370,15 +3370,21 @@ function SaveStatusBar({state}){
     return()=>SyncBus.stop();
   },[]);
 
-  // Save locally + push to server on every state change (debounced 1s)
+  // Save locally every 1s, push to Railway every 30s to avoid lag
   useEffect(()=>{
     const t=setTimeout(()=>{
       LS.save(state); SS.save(state); setLastSaved(new Date());
+    },1000);
+    return()=>clearTimeout(t);
+  },[state]);
+
+  useEffect(()=>{
+    const t=setTimeout(()=>{
       if(!isSyncing.current && SyncBus.isServerMode()){
         const packed=JSON.parse(packState(state));
         SyncBus.push(packed);
       }
-    },1000);
+    },30000);
     return()=>clearTimeout(t);
   },[state]);
 
